@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from lightning.fabric.loggers import CSVLogger
 from lightning.fabric.strategies import FSDPStrategy
-from lightning.fabric.utilities import ThroughputMonitor, measure_flops
+from lightning.fabric.utilities.throughput import ThroughputMonitor, measure_flops
 from torch.utils.data import DataLoader, IterableDataset
 
 # support running without installing as a package
@@ -22,30 +22,30 @@ from lit_gpt import Config
 from lit_gpt.model import GPT, Block
 from lit_gpt.utils import chunked_cross_entropy, estimate_flops, get_default_supported_precision, num_parameters
 
-model_name = "pythia-70m"
+model_name = "gpt-short-1015m"
 name = "openwebtext"
 out_dir = Path("out") / name
-data_dir = Path("data") / name
-save_interval = 10
+data_dir = Path("../../nanoGPT/data") / name
+save_interval = 1000
 eval_interval = 1000
 eval_iters = 100
-log_interval = 1
+log_interval = 64
 
 # Hyperparameters
-learning_rate = 6e-4
-batch_size = 125
-micro_batch_size = 5
+learning_rate = 1e-4
+batch_size = 2
+micro_batch_size = 2
 gradient_accumulation_steps = batch_size // micro_batch_size
 assert gradient_accumulation_steps > 0
-max_iters = 600000  # num_epochs * (epoch_size // micro_batch_size) // devices
+max_iters = 100000  # num_epochs * (epoch_size // micro_batch_size) // devices
 weight_decay = 1e-1
 beta1 = 0.9
 beta2 = 0.95
 grad_clip = 1.0
 decay_lr = True
-warmup_iters = 2000
+warmup_iters = 1000
 lr_decay_iters = max_iters
-min_lr = 6e-5
+min_lr = 1e-5
 
 hparams = {k: v for k, v in locals().items() if isinstance(v, (int, float, str)) and not k.startswith("_")}
 logger = CSVLogger("out", name, flush_logs_every_n_steps=log_interval)
@@ -65,6 +65,7 @@ def setup(devices: int = 1, precision: Optional[str] = None, resume: Union[bool,
     else:
         strategy = "auto"
 
+    print("precision", precision)
     fabric = L.Fabric(devices=devices, strategy=strategy, precision=precision, loggers=logger)
     fabric.print(hparams)
     fabric.launch(main, resume=resume)
@@ -87,6 +88,7 @@ def main(fabric: L.Fabric, resume: Union[bool, Path]) -> None:
     fabric.print(f"Total parameters {num_parameters(model):,}")
 
     model = fabric.setup(model)
+    #model = torch.compile(model)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=learning_rate, weight_decay=weight_decay, betas=(beta1, beta2), foreach=False
     )

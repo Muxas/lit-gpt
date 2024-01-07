@@ -181,6 +181,14 @@ class CausalSelfAttention(nn.Module):
         self.kv_cache: Optional[KVCache] = None
 
         self.config = config
+        self.register_buffer("bias", torch.tril(torch.ones(config.block_size, \
+                config.block_size, dtype=self.attn.weight.dtype)).view(1, 1, config.block_size, \
+                config.block_size), persistent=True)
+
+    def reset_parameters(self) -> None:
+        self.register_buffer("bias", torch.tril(torch.ones(self.config.block_size, \
+                self.config.block_size, dtype=self.attn.weight.dtype)).view(1, 1, self.config.block_size, \
+                self.config.block_size), persistent=True)
 
     def forward(
         self,
@@ -206,26 +214,40 @@ class CausalSelfAttention(nn.Module):
         # maybe repeat k and v if for the non multi-head attention cases
         # training: flash attention requires it
         # inference: multi-query would require a full kv cache so avoid it to limit its memory usage
-        if self.config.n_query_groups != self.config.n_head and (input_pos is None or self.config.n_query_groups != 1):
-            k = k.expand(B, self.config.n_query_groups, q_per_kv, T, self.config.head_size)
-            v = v.expand(B, self.config.n_query_groups, q_per_kv, T, self.config.head_size)
+        #if self.config.n_query_groups != self.config.n_head and (input_pos is None or self.config.n_query_groups != 1):
+        #    k = k.expand(B, self.config.n_query_groups, q_per_kv, T, self.config.head_size)
+        #    v = v.expand(B, self.config.n_query_groups, q_per_kv, T, self.config.head_size)
 
         q = q.reshape(B, -1, T, self.config.head_size)  # (B, nh_q, T, hs)
         k = k.reshape(B, -1, T, self.config.head_size)  # (B, nh_k, T, hs)
         v = v.reshape(B, -1, T, self.config.head_size)  # (B, nh_v, T, hs)
 
-        q_roped = apply_rope(q[..., : self.config.rope_n_elem], cos, sin)
-        k_roped = apply_rope(k[..., : self.config.rope_n_elem], cos, sin)
-        q = torch.cat((q_roped, q[..., self.config.rope_n_elem :]), dim=-1)
-        k = torch.cat((k_roped, k[..., self.config.rope_n_elem :]), dim=-1)
+        #q_roped = apply_rope(q[..., : self.config.rope_n_elem], cos, sin)
+        #k_roped = apply_rope(k[..., : self.config.rope_n_elem], cos, sin)
+        #q = torch.cat((q_roped, q[..., self.config.rope_n_elem :]), dim=-1)
+        #k = torch.cat((k_roped, k[..., self.config.rope_n_elem :]), dim=-1)
 
-        if input_pos is not None:
-            if not isinstance(self.kv_cache, KVCache):
-                raise TypeError("You need to call `gpt.set_kv_cache()`")
-            k, v = self.kv_cache(input_pos, k, v)
+        #if input_pos is not None:
+        #    if not isinstance(self.kv_cache, KVCache):
+        #        raise TypeError("You need to call `gpt.set_kv_cache()`")
+        #    k, v = self.kv_cache(input_pos, k, v)
 
-        y = self.scaled_dot_product_attention(q, k, v, mask)
+        #y = self.scaled_dot_product_attention(q, k, v, mask)
 
+        scale = 1.0 / math.sqrt(self.config.head_size)
+        if False: #self.flash:
+            # efficient attention using Flash Attention CUDA kernels
+            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, \
+                    attn_mask=mask, dropout_p=0.0, scale=scale, \
+                    is_causal=mask is None)
+        else:
+            # manual implementation of attention
+            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+            att = torch.nn.functional.softmax(att, dim=-1)
+            #att = self.attn_dropout(att)
+            y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        y = y.transpose(1, 2)
         y = y.reshape(B, T, C)  # re-assemble all head outputs side by side
 
         # output projection
@@ -235,9 +257,18 @@ class CausalSelfAttention(nn.Module):
         self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         scale = 1.0 / math.sqrt(self.config.head_size)
-        y = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, attn_mask=mask, dropout_p=0.0, scale=scale, is_causal=mask is None
-        )
+        if False: #self.flash:
+            # efficient attention using Flash Attention CUDA kernels
+            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, \
+                    attn_mask=mask, dropout_p=0.0, scale=scale, \
+                    is_causal=mask is None)
+        else:
+            # manual implementation of attention
+            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+            att = F.softmax(att, dim=-1)
+            #att = self.attn_dropout(att)
+            y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         return y.transpose(1, 2)
 
     def build_kv_cache(

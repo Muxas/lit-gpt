@@ -1277,4 +1277,25 @@ llama_2_function_calling = [
 
 configs.extend(llama_2_function_calling)
 
+####################
+# GPT2 single layer
+####################
+gpt_short = [
+    dict(
+        name="gpt-short-1015m",
+        hf_config=dict(org="gpt2", name="gpt-1015m"),
+        block_size=4096,
+        n_layer=4,
+        n_embd=4096,
+        n_head=1,
+        vocab_size=51200,
+        padding_multiple=1024,
+        rotary_percentage=0,
+        rope_condense_ratio=0,
+        rope_base=0,
+        parallel_residual=False,
+    )
+]
+configs.extend(gpt_short)
+
 name_to_config = {config["name"]: config for config in configs}
